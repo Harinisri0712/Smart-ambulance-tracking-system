@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Driver - Navigation</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; width: 100%; font-family: 'Segoe UI', sans-serif; }
+        #map { height: 100vh; width: 100%; background: #222; }
+        
+        .overlay { 
+            position: absolute; top: 10px; left: 10px; z-index: 1000; 
+            background: white; padding: 15px; border-radius: 8px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3); width: 240px;
+        }
+        
+        button {
+            width: 100%; padding: 12px; margin-top: 10px;
+            background: #1976d2; color: white; border: none;
+            border-radius: 5px; font-weight: bold; cursor: pointer;
+            transition: 0.3s;
+        }
+        
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        button:hover:not(:disabled) { background: #1565c0; }
+        
+        .route-text { font-size: 0.9rem; margin-bottom: 5px; }
+
+        #phase-banner {
+            display: none;
+            background: #388e3c;
+            color: white;
+            text-align: center;
+            padding: 8px;
+            font-weight: bold;
+            font-size: 0.85rem;
+            border-radius: 5px;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="overlay">
+        <div class="route-text" style="color:#d32f2f;">● <b>Victim:</b> <span id="accidentName">Loading...</span></div>
+        <div class="route-text" style="color:#1976d2;">● <b>You:</b> <span id="ambulanceName">Loading...</span></div>
+        <hr>
+        <div id="route-info" style="font-size: 0.8rem; color: #666;">Waiting for locations...</div>
+        <div id="phase-banner">🏥 Going to Nearest Hospital...</div>
+        <button id="startBtn" disabled>WAITING FOR ROUTE...</button>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-database-compat.js"></script>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyAFBTC3lkWCswCD9qh9YhNNqRY4zW_u1SI",
+            authDomain: "ambulance-tracking-9b928.firebaseapp.com",
+            databaseURL: "https://ambulance-tracking-9b928-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "ambulance-tracking-9b928",
+            storageBucket: "ambulance-tracking-9b928.firebasestorage.app",
+            messagingSenderId: "609779802352",
+            appId: "1:609779802352:web:4f9eefa261936311c12235"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        // Initialize Map
+        const map = L.map('map').setView([11.52, 78.09], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        // Icons
+        const redIcon = L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+            iconSize: [25, 41], iconAnchor: [12, 41]
+        });
+        const greenIcon = L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+            iconSize: [25, 41], iconAnchor: [12, 41]
+        });
+
+        let driverMarker = null;
+        let accidentMarker = null;
+        let hospitalMarker = null;
+        let routeControl = null;
+        let roadPoints = [];
+        let accidentLat, accidentLng;
+
+        // ✅ STEP 1: Find nearest hospital using OpenStreetMap Overpass API
+        async function findNearestHospital(lat, lng) {
+            document.getElementById('route-info').innerHTML = '🔍 Finding nearest hospital...';
+            
+            const query = `
+                [out:json];
+                node["amenity"="hospital"](around:10000,${lat},${lng});
+                out body;
+            `;
+            
+            const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.elements.length === 0) {
+                    document.getElementById('route-info').innerHTML = '❌ No hospital found nearby!';
+                    return null;
+                }
+
+                // Find the closest hospital
+                let nearest = null;
+                let minDist = Infinity;
+
+                data.elements.forEach(hospital => {
+                    const d = Math.sqrt(
+                        Math.pow(hospital.lat - lat, 2) + 
+                        Math.pow(hospital.lon - lng, 2)
+                    );
+                    if (d < minDist) {
+                        minDist = d;
+                        nearest = hospital;
+                    }
+                });
+
+                return nearest;
+
+            } catch (error) {
+                document.getElementById('route-info').innerHTML = '❌ Error finding hospital!';
+                return null;
+            }
+        }
+
+        // ✅ STEP 2: Route from accident to hospital
+        async function goToHospital(fromLat, fromLng) {
+            const hospital = await findNearestHospital(fromLat, fromLng);
+            
+            if (!hospital) return;
+
+            const hospLat = hospital.lat;
+            const hospLng = hospital.lon;
+            const hospName = hospital.tags.name || 'Nearest Hospital';
+
+            // Show green hospital marker
+            if (hospitalMarker) map.removeLayer(hospitalMarker);
+            hospitalMarker = L.marker([hospLat, hospLng], { icon: greenIcon })
+                .addTo(map)
+                .bindPopup(`🏥 ${hospName}`)
+                .openPopup();
+
+            // Show phase banner
+            document.getElementById('phase-banner').style.display = 'block';
+            document.getElementById('phase-banner').innerText = `🏥 Going to: ${hospName}`;
+
+            // Remove old route
+            if (routeControl) map.removeControl(routeControl);
+
+            // Draw new route from accident to hospital
+            routeControl = L.Routing.control({
+                waypoints: [L.latLng(fromLat, fromLng), L.latLng(hospLat, hospLng)],
+                lineOptions: { styles: [{ color: '#388e3c', weight: 6 }] },
+                show: false,
+                addWaypoints: false
+            }).addTo(map);
+
+            routeControl.on('routesfound', function(e) {
+                roadPoints = e.routes[0].coordinates;
+                const summary = e.routes[0].summary;
+
+                document.getElementById('route-info').innerHTML =
+                    `🏥 Hospital: ${hospName}<br>` +
+                    `Distance: ${(summary.totalDistance/1000).toFixed(2)} km<br>` +
+                    `Est. Time: ${Math.round(summary.totalTime/60)} mins`;
+
+                // Fit map to show route
+                const group = new L.featureGroup([driverMarker, hospitalMarker]);
+                map.fitBounds(group.getBounds().pad(0.3));
+
+                // Start moving to hospital
+                animateToHospital(hospLat, hospLng);
+            });
+        }
+
+        // ✅ STEP 3: Animate ambulance from accident to hospital
+        function animateToHospital(hospLat, hospLng) {
+            let i = 0;
+            const interval = setInterval(() => {
+                if (i >= roadPoints.length) {
+                    clearInterval(interval);
+                    document.getElementById('startBtn').innerText = "PATIENT DELIVERED ✅";
+                    document.getElementById('phase-banner').innerText = "✅ Arrived at Hospital!";
+
+                    // Update Firebase - ambulance at hospital
+                    db.ref('Ambulance').set({
+                        lat: hospLat,
+                        lng: hospLng,
+                        timestamp: Date.now(),
+                        status: "Arrived at Hospital"
+                    });
+                    return;
+                }
+
+                const currentPoint = roadPoints[i];
+                driverMarker.setLatLng([currentPoint.lat, currentPoint.lng]);
+
+                // Send live location to Firebase
+                db.ref('Ambulance').set({
+                    lat: currentPoint.lat,
+                    lng: currentPoint.lng,
+                    timestamp: Date.now(),
+                    status: "Going to Hospital"
+                });
+
+                i += 5;
+            }, 1000);
+        }
+
+        // ✅ STEP 4: First route - ambulance to accident location
+        function animateToAccident() {
+            let i = 0;
+            const interval = setInterval(() => {
+                if (i >= roadPoints.length) {
+                    clearInterval(interval);
+                    document.getElementById('startBtn').innerText = "ARRIVED AT ACCIDENT ✅";
+                    document.getElementById('route-info').innerHTML = '✅ Arrived! Finding hospital...';
+
+                    // ✅ Automatically go to nearest hospital
+                    goToHospital(accidentLat, accidentLng);
+                    return;
+                }
+
+                const currentPoint = roadPoints[i];
+                driverMarker.setLatLng([currentPoint.lat, currentPoint.lng]);
+
+                db.ref('Ambulance').set({
+                    lat: currentPoint.lat,
+                    lng: currentPoint.lng,
+                    timestamp: Date.now(),
+                    status: "Moving to Accident Site"
+                });
+
+                i += 5;
+            }, 1000);
+        }
+
+        // ✅ Read both locations from Firebase
+        db.ref('/').once('value', (snapshot) => {
+            const data = snapshot.val();
+
+            const ambLat = parseFloat(data.Ambulance.lat);
+            const ambLng = parseFloat(data.Ambulance.lng);
+            accidentLat = parseFloat(data.Accident.lat);
+            accidentLng = parseFloat(data.Accident.lng);
+
+            document.getElementById('accidentName').innerText = `${accidentLat}, ${accidentLng}`;
+            document.getElementById('ambulanceName').innerText = `${ambLat}, ${ambLng}`;
+
+            // Place markers
+            driverMarker = L.marker([ambLat, ambLng]).addTo(map).bindPopup("Ambulance");
+            accidentMarker = L.marker([accidentLat, accidentLng], { icon: redIcon })
+                .addTo(map).bindPopup("Accident Location");
+
+            const group = new L.featureGroup([driverMarker, accidentMarker]);
+            map.fitBounds(group.getBounds().pad(0.3));
+
+            // Calculate route ambulance to accident
+            routeControl = L.Routing.control({
+                waypoints: [L.latLng(ambLat, ambLng), L.latLng(accidentLat, accidentLng)],
+                lineOptions: { styles: [{ color: '#1976d2', weight: 6 }] },
+                show: false,
+                addWaypoints: false
+            }).addTo(map);
+
+            routeControl.on('routesfound', function(e) {
+                roadPoints = e.routes[0].coordinates;
+                const summary = e.routes[0].summary;
+
+                document.getElementById('route-info').innerHTML =
+                    `Distance: ${(summary.totalDistance/1000).toFixed(2)} km<br>` +
+                    `Est. Time: ${Math.round(summary.totalTime/60)} mins`;
+
+                document.getElementById('startBtn').innerText = "START MISSION 🚑";
+                document.getElementById('startBtn').disabled = false;
+            });
+        });
+
+        // Button click
+        document.getElementById('startBtn').addEventListener('click', () => {
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('startBtn').innerText = "EN ROUTE TO ACCIDENT...";
+            animateToAccident();
+        });
+
+    </script>
+</body>
+</html>

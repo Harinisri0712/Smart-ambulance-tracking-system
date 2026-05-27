@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Victim - Live Tracking</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', sans-serif; background: #1a1a1a; color: white; }
+        #map { height: 60vh; width: 100%; }
+        .info-panel {
+            height: 40vh; background: #b71c1c;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            text-align: center; box-shadow: 0 -5px 15px rgba(0,0,0,0.5);
+            padding: 10px;
+        }
+        .distance-text { font-size: 3rem; font-weight: bold; margin: 5px 0; }
+        .label { font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; opacity: 0.9; }
+        #status-msg { font-size: 0.9rem; margin-top: 5px; font-style: italic; }
+        #sos-btn {
+            width: 85%;
+            padding: 15px;
+            margin-top: 15px;
+            background: #7f0000;
+            color: white;
+            border: 3px solid #ff5252;
+            border-radius: 50px;
+            font-size: 1.3rem;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 0 20px rgba(255,0,0,0.6);
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%   { box-shadow: 0 0 10px rgba(255,0,0,0.4); }
+            50%  { box-shadow: 0 0 30px rgba(255,0,0,0.9); }
+            100% { box-shadow: 0 0 10px rgba(255,0,0,0.4); }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <div class="info-panel">
+        <div class="label">Ambulance Distance</div>
+        <div class="distance-text">
+            <span id="distance">--</span>
+            <small style="font-size: 1.5rem;">km</small>
+        </div>
+        <div id="status-msg">Waiting for ambulance...</div>
+
+        <!-- ✅ SOS BUTTON -->
+        <button id="sos-btn" onclick="triggerSOS()">
+            🆘 SOS - CALL AMBULANCE
+        </button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-database-compat.js"></script>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyAFBTC3lkWCswCD9qh9YhNNqRY4zW_u1SI",
+            authDomain: "ambulance-tracking-9b928.firebaseapp.com",
+            databaseURL: "https://ambulance-tracking-9b928-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "ambulance-tracking-9b928",
+            storageBucket: "ambulance-tracking-9b928.firebasestorage.app",
+            messagingSenderId: "609779802352",
+            appId: "1:609779802352:web:4f9eefa261936311c12235"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        const map = L.map('map').setView([11.52, 78.09], 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        const redIcon = L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+            iconSize: [25, 41], iconAnchor: [12, 41]
+        });
+
+        let vLat = null;
+        let vLng = null;
+        let victimMarker = null;
+        let ambMarker = null;
+
+        // Distance formula
+        function getDist(lat1, lon1, lat2, lon2) {
+            const R = 6371;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            return (R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))).toFixed(2);
+        }
+
+        // Read accident location from Firebase
+        db.ref('Accident').on('value', (snapshot) => {
+            const data = snapshot.val();
+            if (data && data.lat && data.lng) {
+                vLat = parseFloat(data.lat);
+                vLng = parseFloat(data.lng);
+                if (!victimMarker) {
+                    victimMarker = L.marker([vLat, vLng], { icon: redIcon })
+                        .addTo(map).bindPopup("Accident Location");
+                    map.setView([vLat, vLng], 14);
+                } else {
+                    victimMarker.setLatLng([vLat, vLng]);
+                }
+            }
+        });
+
+        // Read ambulance location from Firebase
+        db.ref('Ambulance').on('value', (snapshot) => {
+            const data = snapshot.val();
+            if (data && data.lat && data.lng) {
+                const aLat = parseFloat(data.lat);
+                const aLng = parseFloat(data.lng);
+                if (!ambMarker) {
+                    ambMarker = L.marker([aLat, aLng]).addTo(map).bindPopup("Ambulance");
+                } else {
+                    ambMarker.setLatLng([aLat, aLng]);
+                }
+                if (vLat !== null && vLng !== null) {
+                    const dist = getDist(vLat, vLng, aLat, aLng);
+                    document.getElementById('distance').innerText = dist;
+                    document.getElementById('status-msg').innerText = "🚑 Ambulance is En Route...";
+                    if (victimMarker) {
+                        const group = new L.featureGroup([victimMarker, ambMarker]);
+                        map.fitBounds(group.getBounds().pad(0.3));
+                    }
+                }
+            }
+        });
+
+        // ✅ SOS Button Function
+        function triggerSOS() {
+            if (confirm("Are you sure you want to call ambulance?")) {
+
+                // Send SOS to Firebase
+                db.ref('SOS').set({
+                    active: true,
+                    timestamp: Date.now(),
+                    lat: vLat,
+                    lng: vLng
+                });
+
+                // Update accident location in Firebase
+                db.ref('Accident').set({
+                    lat: vLat,
+                    lng: vLng
+                });
+
+                // Update button appearance
+                document.getElementById('sos-btn').innerText = "✅ SOS SENT!";
+                document.getElementById('sos-btn').style.background = "#1b5e20";
+                document.getElementById('sos-btn').style.border = "3px solid #69f0ae";
+                document.getElementById('sos-btn').disabled = true;
+
+                // Update status message
+                document.getElementById('status-msg').innerText =
+                    "🆘 SOS Sent! Ambulance is being notified!";
+                document.getElementById('status-msg').style.color = "#ff5252";
+
+                // Play alarm sound
+                const audio = new Audio('https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3');
+                audio.play();
+            }
+        }
+    </script>
+</body>
+</html>
