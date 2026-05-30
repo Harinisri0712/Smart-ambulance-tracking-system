@@ -1,0 +1,134 @@
+           driver.html
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Driver - Nachipatty Navigation</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; width: 100%; font-family: 'Segoe UI', sans-serif; }
+        #map { height: 100vh; width: 100%; background: #222; }
+        
+        .overlay { 
+            position: absolute; top: 10px; left: 10px; z-index: 1000; 
+            background: white; padding: 15px; border-radius: 8px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3); width: 240px;
+        }
+        
+        button {
+            width: 100%; padding: 12px; margin-top: 10px;
+            background: #1976d2; color: white; border: none;
+            border-radius: 5px; font-weight: bold; cursor: pointer;
+            transition: 0.3s;
+        }
+        
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        button:hover:not(:disabled) { background: #1565c0; }
+        
+        .route-text { font-size: 0.9rem; margin-bottom: 5px; }
+    </style>
+</head>
+<body>
+
+    <div class="overlay">
+        <div class="route-text" style="color:#d32f2f;">● <b>Victim:</b> Vennandur</div>
+        <div class="route-text" style="color:#1976d2;">● <b>You:</b> Nachipatty</div>
+        <hr>
+        <div id="route-info" style="font-size: 0.8rem; color: #666;">Calculating road path...</div>
+        <button id="startBtn" disabled>WAITING FOR ROUTE...</button>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-database-compat.js"></script>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyAFBTC3lkWCswCD9qh9YhNNqRY4zW_u1SI",
+            authDomain: "ambulance-tracking-9b928.firebaseapp.com",
+            databaseURL: "https://ambulance-tracking-9b928-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "ambulance-tracking-9b928",
+            storageBucket: "ambulance-tracking-9b928.firebasestorage.app",
+            messagingSenderId: "609779802352",
+            appId: "1:609779802352:web:4f9eefa261936311c12235"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        const nachipatty = [11.513973, 78.077053]; 
+        const vennandur = [11.52, 78.09];
+
+        const map = L.map('map').setView(nachipatty, 14);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        const driverMarker = L.marker(nachipatty).addTo(map).bindPopup("Ambulance");
+        const redIcon = L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+            iconSize: [25, 41], iconAnchor: [12, 41]
+        });
+        L.marker(vennandur, {icon: redIcon}).addTo(map).bindPopup("Victim Site");
+
+        let roadPoints = [];
+
+        const control = L.Routing.control({
+            waypoints: [L.latLng(nachipatty), L.latLng(vennandur)],
+            lineOptions: { styles: [{ color: '#1976d2', weight: 6 }] },
+            show: false,
+            addWaypoints: false
+        }).addTo(map);
+
+        control.on('routesfound', function(e) {
+            roadPoints = e.routes[0].coordinates;
+            const summary = e.routes[0].summary;
+            
+            document.getElementById('route-info').innerHTML = 
+                `Distance: ${(summary.totalDistance/1000).toFixed(2)} km<br>` +
+                `Est. Time: ${Math.round(summary.totalTime/60)} mins`;
+            
+            document.getElementById('startBtn').innerText = "START MISSION 🚑";
+            document.getElementById('startBtn').disabled = false;
+        });
+
+        function animateAlongRoad() {
+            let i = 0;
+            const interval = setInterval(() => {
+                if (i >= roadPoints.length) {
+                    clearInterval(interval);
+                    document.getElementById('startBtn').innerText = "ARRIVED ✅";
+                    return;
+                }
+
+                const currentPoint = roadPoints[i];
+                driverMarker.setLatLng([currentPoint.lat, currentPoint.lng]);
+                
+                db.ref('Ambulance').set({ 
+                    lat: currentPoint.lat, 
+                    lng: currentPoint.lng,
+                    timestamp: Date.now(),
+                    status: "Moving to Accident Site"
+                });
+
+                i += 5;
+            }, 1000);
+        }
+
+        document.getElementById('startBtn').addEventListener('click', () => {
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('startBtn').innerText = "EN ROUTE...";
+            animateAlongRoad();
+        });
+
+    </script>
+</body>
+</html>
